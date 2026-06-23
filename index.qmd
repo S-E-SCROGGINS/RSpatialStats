@@ -1,0 +1,75 @@
+---
+title: "Spatial Analysis using R"
+format: html
+editor: visual
+---
+
+## Content and Structure 
+
+This tutorial is structured according to data type and typical research questions, relevant to spatial analysis. All data used in this tutorial is is publicly available or randomly generated and for training purposes only.
+
+## Polygons
+
+```{r}
+#| message: false
+#| results: hide
+
+library(tigris)
+library(sf)
+
+```
+
+Rather than import polygon data, we can use the tigris package and download polygon data. Let's download census tracts in the state of Georgia from 2024.
+
+```{r}
+#| results: hide
+ga_tracts <- tracts(state="GA", year=2024, cb=TRUE)
+```
+
+Once, downloaded we can plot the polygons...
+
+```{r}
+plot(ga_tracts$geometry)
+```
+
+and check the crs...
+
+```{r}
+st_crs(ga_tracts)
+```
+
+We can begin to explore basic spatial descriptives of GA census tracts, but first let's project.
+
+```{r}
+ga_tracts_projected <- st_transform(ga_tracts, 5070)
+```
+
+Now we can calculate things like average distance between tract centroids, median size of tracts, area extent (bounding box), and dissolve tracts.
+
+```{r}
+#| warning: false
+# Average distance between tracts 
+ ga_tracts_projected |>
+  st_centroid() |>
+  st_distance() |>
+  (\(x) mean(x[upper.tri(x)]))()
+ 
+# Median tract size
+ median(st_area(ga_tracts_projected))
+ 
+#Extent 
+st_bbox(ga_tracts_projected)
+
+#Union 
+plot(st_geometry(ga_tracts_projected %>%
+  st_make_valid() %>%
+  st_union()))
+
+
+ 
+ 
+```
+
+Attributes can be joined to tracts for additional analysis. For example, we can join the environmental justice index to our polygons.
+
+First, you'll need to import EJI data. Make sure to change the path below
