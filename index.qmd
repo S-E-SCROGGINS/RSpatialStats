@@ -1,0 +1,410 @@
+---
+title: "Spatial Analysis using R"
+format: html
+editor: visual
+---
+
+## Content and Structure
+
+This tutorial is structured according to data type and typical research questions, relevant to spatial analysis. All data used in this tutorial is is publicly available or randomly generated and for training purposes only.
+
+## 
+
+```{r}
+#| message: false
+#| results: hide 
+#| warning: false
+
+
+library(tigris)
+library(sf)
+library(readr)
+library(tidyverse)
+library(spdep)
+library(tmap)
+library(spatstat)
+library(terra)
+library(gstat)
+```
+
+## Polygons
+
+Rather than import polygon data, we can use the tigris package and download polygon data. Let's download census tracts in the state of Georgia from 2024.
+
+```{r}
+#| results: hide
+ga_tracts <- tracts(state="GA", year=2024, cb=TRUE)
+```
+
+Once, downloaded we can plot the polygons...
+
+```{r}
+plot(ga_tracts$geometry)
+```
+
+and check the crs...
+
+```{r}
+st_crs(ga_tracts)
+```
+
+We can begin to explore basic spatial descriptives of GA census tracts, but first let's project.
+
+```{r}
+ga_tracts_projected <- st_transform(ga_tracts, 5070)
+```
+
+Now we can calculate things like average distance between tract centroids, median size of tracts, area extent (bounding box), and dissolve tracts.
+
+```{r}
+#| warning: false
+# Average distance between tracts 
+ ga_tracts_projected |>
+  st_centroid() |>
+  st_distance() |>
+  (\(x) mean(x[upper.tri(x)]))()
+ 
+# Median tract size
+ median(st_area(ga_tracts_projected))
+ 
+#Extent 
+st_bbox(ga_tracts_projected)
+
+#Union 
+plot(st_geometry(ga_tracts_projected %>%
+  st_make_valid() %>%
+  st_union()))
+
+
+ 
+ 
+```
+
+Attributes can be joined to tracts for additional analysis. For example, we can join the environmental justice index to our polygons.
+
+First, you'll need to import EJI data and do some light cleaning (convert -999 to NA) and keep only the final EJI score (RPL_EJI) and the GEOID column
+
+```{r}
+#| results: hide
+EJI <- read_csv(
+  unz("data/EJI_2024_United_States.zip", "EJI_2024_United_States.csv"))
+
+EJI <- EJI %>% select(GEOID, RPL_EJI) %>% 
+  filter(RPL_EJI != -999)
+
+
+```
+
+Now we can join our polygons to EJI using GEOID. We'll also need to drop any tract that's missing RPL_EJI score.
+
+```{r}
+eji_tracts_projected <- ga_tracts_projected %>%  left_join(EJI, by = "GEOID")
+
+eji_tracts_projected<-eji_tracts_projected %>%
+  drop_na(RPL_EJI)
+```
+
+eji_tracts_projected \<- ga_tracts_projected %\>% left_join(EJI, by = "GEOID")
+
+eji_tracts_projected\<-eji_tracts_projected %\>%
+
+drop_na(RPL_EJI)
+
+### Question...
+
+1.  Are neighboring tracts likely to have similar EJI scores?
+
+The first question is asking about spatial dependence. Is EJI associated with location? To find out we'll first need to create a spatial weight matrix. This is an object that defines which locations/tracts are neighbors.
+
+```{r}
+nb <- poly2nb(eji_tracts_projected, queen = TRUE)
+lw <- nb2listw(nb, style = "W", zero.policy = TRUE)
+
+```
+
+Then we can conduct a global Moran's I test to determine is EJI score is spatially dependent.
+
+```{r}
+moran.mc(eji_tracts_projected$RPL_EJI,  lw,  nsim = 999,  zero.policy = FALSE)
+
+```
+
+A Moran's I of 0.61 indicates a fairly strong spatially association between tracts and EJI score. This means neighbors are likely to have similar scores.
+
+### Question...
+
+2.  Does EJI Score tend to cluster in a specific area?
+
+There's a few different ways to tackle this question, depending on how "cluster" is defined and being used. But the simplest way to answer is a Getis-Ord G or Gi\* (gee-eye-star) test. This test compares average neighboring values to determine where it's higher than expected, suggesting non-random clustering.
+
+The Gi\* statistic is a z-score that can be determined and then entered back into the original sf dataframe
+
+```{r}
+gi <- localG(eji_tracts_projected$RPL_EJI,lw,zero.policy = TRUE)
+
+eji_tracts_projected$gi_z <- as.numeric(gi)
+
+```
+
+Rather than map a z-score, it's usually more helpful if we put the z-score into categories (hotspots) and map those instead.
+
+```{r}
+#| message: false
+#| warning: false
+#| 
+eji_tracts_projected <- eji_tracts_projected %>%  mutate( gi_class = case_when(      gi_z >= 1.96  ~ "Hot Spot", gi_z <= -1.96 ~ "Cold Spot", TRUE  ~ "Not Significant" ))
+
+tm_shape(eji_tracts_projected) +  tm_polygons("gi_class")
+
+
+```
+
+The above map shows tracts that have significantly higher (or lower) EJI scores. However, the default colors aren't very helpful considering blue is coded as a hotspot and red is coded as a cold spot. Using tmap options, we can customize this better.
+
+```{r}
+#| message: false
+#| warning: false
+#| 
+tm_shape(eji_tracts_projected) +  tm_polygons("gi_class",   
+ palette = c( "Hot Spot" = "#B2182B", 
+     "Cold Spot" = "#2166AC",     
+ "Not Significant" = "#F7F7F7"),
+    border.col = "grey60",  
+  colorNA = NA,  
+  textNA = ""  )
+
+```
+
+Using the analysis above we can summarize - Global Moran's I revealed significant positive spatial dependence of EJI value (I = 0.61, p \< 0.001), indicating that the outcome exhibited a clustered spatial pattern. Subsequent Getis-Ord Gi\* analysis identified several statistically significant hotspots and coldspots, demonstrating where EJI was likely to be significanty higher or lower.
+
+## Points
+
+For point data, we can import the point csv file. This file has a lat and long column along with a "case" column that has a binary value of 0 or 1.
+
+```{r}
+#| results: hide
+points <- read_csv("data/points.csv")
+
+```
+
+Once imported, we need to convert it from a df to a sf spatial object by using the lat long columns. We can also go ahead and project it from lat/long (4326) to 5070
+
+```{r}
+points <- points %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%  
+  st_transform(5070)
+
+```
+
+Next we can plot the points and see where cases (1) are compared to no case (0)
+
+```{r}
+plot(st_geometry(filter(points, case == 0)), pch = 16,  cex = 0.8,  col = "black")
+plot(st_geometry(filter(points, case == 1)),  add = TRUE,  pch = 16,  cex = 0.8,  col = "red")
+
+```
+
+### Question...
+
+1.  What is the spatially relative risk of case=1?
+
+Anytime you have a point vector or coordinates, a point pattern analysis or point pattern process (PPP) is a good place to start.
+
+To accomplish this, we need to convert the points sf into a ppp object and because we don't have a defined geographic unit, we can use the extent of the points as a convex hull, or the small polygon that contains all points.
+
+```{r}
+
+hull <- points |>
+  st_union() |>
+  st_convex_hull() |>
+  st_buffer(1)
+
+W <- as.owin(hull)
+
+```
+
+Next, we can create a point pattern, making sure to keep the "case" column attribute. These attributes or covariates are called "marks" when using PPP.
+
+```{r}
+coords <- st_coordinates(points)
+
+pp <- ppp(
+  x = coords[,1],
+  y = coords[,2],
+  window = W,
+  marks = factor(
+    ifelse(points$case == 1,
+           "case",
+           "control")
+  )
+)
+```
+
+Now we can create a relative risk map of the area. Rather than use the default sigma, we'll let the bandwidth of smoothing come directly from the data.
+
+```{r}
+#| warning: false
+ plot(relrisk(
+  pp,
+  sigma = bw.relrisk(pp)
+))
+```
+
+The above image can be used to determine if any locations have RR\>1 and we can also convert the image into a raster for later use.
+
+```{r}
+#| warning: false
+summary(relrisk(pp, sigma = bw.relrisk(pp)))
+```
+
+### Question...
+
+2.  Do the cases cluster?
+
+Two popular distance base PPP cluster functions are:
+
+-   Ripley's K: do cases cluster together (compared against complete spatial randomnes (CSR)
+
+-   K-Cross: are cases spatially associated with controls (or are one type of point associated with another)
+
+Given that were interested in only how cases cluster, we can run a Ripley's K function. Since we do also have non-case information we could conduct a random-labeling envelope test (swapping case/control labels and comparing) but this requires a few custom functions. Something to keep in mind though...
+
+```{r}
+#| results: hide
+cases_pp <- pp[marks(pp) == "case"]
+
+env_cases <- envelope(
+  cases_pp,
+  fun = Kest,
+  nsim = 999
+)
+```
+
+Now we can plot and interpret
+
+```{r}
+plot(env_cases)
+```
+
+The obs line is completely within the shaded area (the envelope), suggesting little to no positive or negative clustering has occured.
+
+### Results
+
+Kernel-based relative risk estimates revealed no areas with an RR\>1. Additionally, a K-Cross simulation test using cases and controls found no non-random clusters of cases. Additional steps, such as a epidemiological scan (using smerc package) could be used to identify localized clusters.
+
+## Raster
+
+One of the most helpful (and interesting!) things that a raster can be used for is the creation of prediction grid.
+
+### Question...
+
+1\) Where are other cases likely to be found within a study area?
+
+First, let's import the shapefile of our study area.
+
+```{r}
+
+study_area <- st_read("data/stl_co.shp")
+```
+
+Next, import point data
+
+```{r}
+study_points <- read.csv("data/points2.csv")
+```
+
+Right now we have 1 unprojected sf polygon (study_area) and a df that contains lat and long. So we need to convert the df of points to sf and project both the points and the study area.
+
+```{r}
+#df to sf 
+study_points <- st_as_sf(
+  study_points,
+  coords = c("longitude", "latitude"),
+  crs = 4326
+)
+
+#project points
+study_area <- study_area |>
+  st_make_valid() %>%
+  st_transform(5070)
+
+#project study area
+study_points <- st_transform(study_points, 5070)
+
+```
+
+We can double check that the points all fall within the study area.
+
+```{r}
+plot(study_area$geometry)
+plot(study_points$geometry, add=TRUE)
+```
+
+Now that our data is imported, we can answer the question. First, we make a raster grid of the area.
+
+```{r}
+r <- rast(
+  ext(vect(study_area)),
+  resolution = 500,   
+  crs = crs(vect(study_area))
+)
+
+values(r) <- 1
+
+
+r_mask <- mask(r, vect(study_area))
+```
+
+Then we convert cells to prediction points
+
+```{r}
+grid_pts <- as.points(r_mask, na.rm = TRUE) %>%
+  st_as_sf()
+```
+
+Next, we use our points to fix a variogram
+
+```{r}
+vgm_emp <- variogram(outcome ~ 1, study_points)
+
+vgm_fit <- fit.variogram(
+  vgm_emp,
+  model = vgm(
+    psill = 400,
+    model = "Sph",
+    range = 20000,
+    nugget = 20
+  )
+)
+
+plot(vgm_emp, vgm_fit)
+```
+
+Next, we'll conduct the Kriging and convert prediction back on to the raster
+
+```{r}
+kriged <- krige(
+  outcome ~ 1,
+  locations = study_points,
+  newdata = grid_pts,
+  model = vgm_fit
+)
+
+kriged_v <- vect(kriged)
+
+pred_rast <- rasterize(
+  kriged_v,
+  r_mask,
+  field = "var1.pred"
+)
+
+names(pred_rast) <- "prediction"
+```
+
+And now we can plot our prediction raster
+
+```{r}
+
+plot(pred_rast)
+plot(vect(study_area), add = TRUE)
+```
