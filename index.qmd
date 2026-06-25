@@ -286,11 +286,7 @@ Now we can plot and interpret
 plot(env_cases)
 ```
 
-The obs line is completely within the shaded area (the envelope), suggesting little to no positive or negative clustering has occured.
-
-### Results
-
-Kernel-based relative risk estimates revealed no areas with an RR\>1. Additionally, a K-Cross simulation test using cases and controls found no non-random clusters of cases. Additional steps, such as a epidemiological scan (using smerc package) could be used to identify localized clusters.
+The obs line is completely within the shaded area (the envelope), suggesting little to no positive or negative clustering has occurred.
 
 ## Raster
 
